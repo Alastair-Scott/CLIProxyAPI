@@ -276,25 +276,29 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 					continue
 				}
 				switch gjson.GetBytes(payload, "type").String() {
-				case "response.steer":
-					parent := gjson.GetBytes(payload, "previous_response_id").String()
-					metadataMu.Lock()
-					settings := responseSettings[parent]
-					metadataMu.Unlock()
-					if settings == nil {
-						if !waitFor(func() bool { return len(pending) == 0 }) {
-							return
+				case "response.steer", "response.interrupt":
+					if gjson.GetBytes(payload, "type").String() == "response.steer" {
+						parent := gjson.GetBytes(payload, "previous_response_id").String()
+						metadataMu.Lock()
+						settings := responseSettings[parent]
+						metadataMu.Unlock()
+						if settings == nil {
+							if !waitFor(func() bool { return len(pending) == 0 }) {
+								return
+							}
+							metadataMu.Lock()
+							settings = responseSettings[parent]
+							metadataMu.Unlock()
 						}
 						metadataMu.Lock()
-						settings = responseSettings[parent]
+						unacknowledgedSteers = append(unacknowledgedSteers, parent)
+						if settings != nil {
+							steeringSettings[parent] = settings
+						}
 						metadataMu.Unlock()
 					}
-					metadataMu.Lock()
-					unacknowledgedSteers = append(unacknowledgedSteers, parent)
-					if settings != nil {
-						steeringSettings[parent] = settings
-					}
-					metadataMu.Unlock()
+					// Interrupts must reach upstream immediately, without steering bookkeeping
+					// or waiting for the active response (or a queued create) to finish.
 					// Control frames bypass ALL response.create translations and defaults.
 					// Unknown fields and unsupported input are left to upstream validation.
 					if !cliproxyexecutor.WebsocketAuthEnabled(streamCtx, auth.ID) {
@@ -308,7 +312,7 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 						fail(mapCodexWebsocketWriteError(sess, conn, errWrite))
 						return
 					}
-					log.Infof("codex websockets: request forwarded session=%s auth=%s url=%s event=response.steer", sess.sessionID, auth.ID, initial.wsURL)
+					log.Infof("codex websockets: request forwarded session=%s auth=%s url=%s event=%s", sess.sessionID, auth.ID, initial.wsURL, gjson.GetBytes(payload, "type").String())
 					continue
 
 				case "response.create", "response.append":
